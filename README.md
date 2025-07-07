@@ -32,7 +32,7 @@
 Без `PATH` потрібно викликати у папці з файлом (`cd ...\Audio-Script-with-metadata*`) з параметром `.\`.
 ```powershell
 # Приклад: 
-.\ mdown.ps1 "URL"
+.\mdown.ps1 "URL"
 ```
 
 _* - папка, де міститься `mdown.ps1`._
