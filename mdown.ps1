@@ -1,112 +1,112 @@
-# Оголошуємо параметри. Додано новий перемикач -feat.
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$URL,
-
+    [Parameter(Mandatory = $true)][string]$URL,
     [string]$Title = "",
     [string]$Artist = "",
-
     [switch]$feat
 )
 
-# --- Блок налаштування шляхів ---
-$DesktopPath = [System.Environment]::GetFolderPath('Desktop')
-# Тимчасовий файл потрібен для надійного запису метаданих
-$TempFilename = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "temp_audio_$(Get-Random).m4a"
+$Desktop = [Environment]::GetFolderPath('Desktop')
+$TempBase = Join-Path ([IO.Path]::GetTempPath()) "temp_$(Get-Random)"
+$Temp = "$TempBase.m4a"
 
-# --- Головний блок з надійною обробкою помилок ---
-try {
-    # --- Крок 1: Отримання метаданих у форматі JSON ---
-    Write-Host "Отримання розширених метаданих..." -ForegroundColor DarkMagenta
-    # Завантажуємо всю інформацію про відео в одному JSON-об'єкті
-    $JsonInfo = & yt-dlp -j --skip-download $URL | ConvertFrom-Json
+$LogPath = Join-Path $PSScriptRoot "downloads.log"
+$UpdateFile = Join-Path $PSScriptRoot ".last_update"
+$Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-    if ($null -eq $JsonInfo) {
-        throw "Не вдалося отримати метадані з посилання (JSON)."
-    }
-    
-    $AutoTitle = $JsonInfo.title
-    $ExtractorName = $JsonInfo.extractor_key.ToUpper()
-
-    # --- Крок 2: Інтелектуальне визначення виконавця з вибором логіки ---
-    $AutoArtist = ""
-    # Перевіряємо, чи існує список артистів
-    if ($null -ne $JsonInfo.artists -is [array] -and $JsonInfo.artists.Count -gt 0) {
-        # Завжди видаляємо дублікатів
-        $UniqueArtists = $JsonInfo.artists | Select-Object -Unique
-
-        if ($feat) {
-            # ЛОГІКА "FEAT.": беремо першого, інших шукаємо в назві
-            $MainArtist = $UniqueArtists[0]
-            $FeaturedPerformers = New-Object System.Collections.ArrayList
-
-            $OtherArtists = $UniqueArtists | Select-Object -Skip 1
-            foreach ($artist_item in $OtherArtists) {
-                if ($AutoTitle -match [regex]::Escape($artist_item)) {
-                    $FeaturedPerformers.Add($artist_item) | Out-Null
-                }
-            }
-            
-            if ($FeaturedPerformers.Count -gt 0) {
-                $AutoArtist = "$MainArtist (feat. $($FeaturedPerformers -join ", "))"
-            } else {
-                $AutoArtist = $MainArtist
-            }
-        } else {
-            # ЛОГІКА ЗА ЗАМОВЧУВАННЯМ: Просто об'єднуємо всіх через &
-            $AutoArtist = $UniqueArtists -join " & "
+$ShouldUpdate = $true
+if (Test-Path $UpdateFile) {
+    try {
+        $LastCheck = [datetime]::Parse((Get-Content $UpdateFile -Raw))
+        if (((Get-Date) - $LastCheck).Days -lt 30) {
+            $ShouldUpdate = $false
         }
     }
-    
-    # Запасні варіанти, якщо логіка вище не спрацювала
-    if ([string]::IsNullOrEmpty($AutoArtist)) {
-        $AutoArtist = if ($null -ne $JsonInfo.artist) { $JsonInfo.artist } else { $JsonInfo.channel }
+    catch { }
+}
+
+if ($ShouldUpdate) {
+    Write-Host "Місячна перевірка оновлень..." -ForegroundColor Cyan
+    try {
+        $ytOutput = winget upgrade yt-dlp.yt-dlp --accept-source-agreements --accept-package-agreements --silent 2>&1 | Out-String
+        $ytExit = $LASTEXITCODE
+        
+        $ffOutput = winget upgrade Gyan.FFmpeg --accept-source-agreements --accept-package-agreements --silent 2>&1 | Out-String
+        $ffExit = $LASTEXITCODE
+        
+        $SuccessCodes = @(0, -1978335189)
+        
+        if ($ytExit -in $SuccessCodes -and $ffExit -in $SuccessCodes) {
+            Add-Content -Path $LogPath -Value "[$Time] ПЕРЕВІРКА ОНОВЛЕННЯ: Успішно (оновлено або вже останні версії)" -Encoding UTF8
+        }
+        else {
+            $ErrorMsg = ""
+            if ($ytExit -notin $SuccessCodes) { $ErrorMsg += "yt-dlp (Код $ytExit). " }
+            if ($ffExit -notin $SuccessCodes) { $ErrorMsg += "FFmpeg (Код $ffExit). " }
+            Add-Content -Path $LogPath -Value "[$Time] ПЕРЕВІРКА ОНОВЛЕННЯ: Неуспішно - $ErrorMsg" -Encoding UTF8
+        }
     }
-
-    # --- Крок 3: Очищення та капіталізація метаданих ---
-    $CleanArtist = $AutoArtist -replace " - Topic", ""
+    catch {
+        Add-Content -Path $LogPath -Value "[$Time] ПЕРЕВІРКА ОНОВЛЕННЯ: Критична помилка - $($_.Exception.Message)" -Encoding UTF8
+    }
     
-    $TextInfo = (Get-Culture).TextInfo
-    $CasedTitle = if ($AutoTitle -like "* *") { $TextInfo.ToTitleCase($AutoTitle.ToLower()) } else { $AutoTitle }
-    $CasedArtist = if ($CleanArtist -like "* *") { $TextInfo.ToTitleCase($CleanArtist.ToLower()) } else { $CleanArtist }
+    (Get-Date).ToString("yyyy-MM-dd") | Set-Content $UpdateFile
+}
 
-    # --- Крок 4: Визначення фінальних назви та виконавця ---
-    $FinalTitle = if (-not ([string]::IsNullOrEmpty($Title))) { $Title } else { $CasedTitle }
-    $FinalArtist = if (-not ([string]::IsNullOrEmpty($Artist))) { $Artist } else { $CasedArtist }
+try {
+    Write-Host "Отримання даних..." -ForegroundColor DarkMagenta
+    
+    $j = & yt-dlp -j --no-warnings --skip-download $URL 2>$null | ConvertFrom-Json
+    if (-not $j) { throw "Не вдалося отримати метадані з YouTube." }
 
-    Write-Host "Отримання даних із $($ExtractorName)..." -ForegroundColor DarkYellow
-    Write-Host "Виконавець: $FinalArtist" -ForegroundColor Magenta
-    Write-Host "Назва: $FinalTitle" -ForegroundColor Magenta
+    $a = $j.artist
+    if ($j.artists) {
+        $u = $j.artists | Select-Object -Unique
+        if ($feat -and $u.Count -gt 1) {
+            $f = ($u | Select-Object -Skip 1) -join ", "
+            $a = "$($u[0]) (feat. $f)"
+        }
+        else {
+            $a = $u -join " & "
+        }
+    }
+    if (-not $a) { $a = $j.channel }
+    $a = $a -replace " - Topic", ""
 
-    # --- Крок 5: Уніфікований процес завантаження і обробки ---
-    $BaseFilename = "$FinalArtist - $FinalTitle.m4a"
-    $FinalFilename = Join-Path -Path $DesktopPath -ChildPath $BaseFilename
+    $FinalA = if ($Artist) { $Artist } else { $a }
+    $FinalT = if ($Title) { $Title } else { $j.title }
 
-    & yt-dlp -x --audio-format m4a --embed-thumbnail -o $TempFilename $URL
-    if ($LASTEXITCODE -ne 0) { throw "yt-dlp не зміг завантажити відео." }
+    $FinalA = $FinalA -replace '[\\/:*?"<>|]', ''
+    $FinalT = $FinalT -replace '[\\/:*?"<>|]', ''
 
-    & ffmpeg -i $TempFilename -c:a copy -c:v copy -metadata title="$FinalTitle" -metadata artist="$FinalArtist" $FinalFilename -hide_banner -loglevel error
-    if ($LASTEXITCODE -ne 0) { throw "FFmpeg не зміг обробити файл." }
+    $BaseName = "$FinalA - $FinalT.m4a"
+    $OutPath = Join-Path $Desktop $BaseName
 
-    # Фінальне повідомлення
+    Write-Host "Виконавець: $FinalA`nНазва: $FinalT" -ForegroundColor Magenta
+
+    & yt-dlp -q --progress --no-warnings -x --audio-format m4a --embed-thumbnail -o $Temp $URL
+    if ($LASTEXITCODE -ne 0) { throw "Помилка yt-dlp під час завантаження." }
+
+    & ffmpeg -y -i $Temp -c copy -metadata title="$FinalT" -metadata artist="$FinalA" $OutPath -hide_banner -loglevel error
+    if ($LASTEXITCODE -ne 0) { throw "Помилка FFmpeg." }
+
+    $LogLine = "[$Time] $URL -> $FinalA | $FinalT"
+    Add-Content -Path $LogPath -Value $LogLine -Encoding UTF8
+
     Write-Host ""
     Write-Host "╔═══════════════════════════════════════════════════╗" -ForegroundColor Green
     Write-Host "║ ✅ Готово! Файл збережено як:                     ║" -ForegroundColor Green
-    Write-Host "║ $($BaseFilename)" -ForegroundColor Green
+    Write-Host "║ $($BaseName)" -ForegroundColor Green
     Write-Host "╚═══════════════════════════════════════════════════╝" -ForegroundColor Green
     Write-Host ""
+
 }
 catch {
-    # Обробка помилок
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════╗" -ForegroundColor Red
+    Write-Host "╔═══════════════════════════════════════════════════╗" -ForegroundColor Red
     Write-Host "║ ПОМИЛКА: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "╚════════════════════════════════════════════════════╝" -ForegroundColor Red
+    Write-Host "╚═══════════════════════════════════════════════════╝" -ForegroundColor Red
     Write-Host ""
 }
 finally {
-    # Гарантоване видалення тимчасових файлів
-    if (Test-Path $TempFilename) {
-        Remove-Item $TempFilename
-    }
+    Remove-Item "$TempBase*" -Force -ErrorAction SilentlyContinue
 }
